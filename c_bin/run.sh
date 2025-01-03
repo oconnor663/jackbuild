@@ -19,5 +19,5 @@ cbindgen --lang=c "$HERE/../rust_lib" > rust_lib/lib.h
 gcc \
     main.c \
     "$HERE/../c_lib/lib.c" \
-    "$HERE/../rust_lib/target/debug/librust_lib.a" \
-    -o "$HERE/a.out"
+    "$HERE/../rust_lib/target/debug/librust_lib.a"
+./a.out
