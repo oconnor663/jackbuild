@@ -3,5 +3,8 @@ name = "rust_bin"
 version = "0.1.0"
 edition = "2021"
 
+[build-dependencies]
+cc = "1.2.10"
+
 [dependencies]
 rust_lib = { path = "../rust_lib" }
