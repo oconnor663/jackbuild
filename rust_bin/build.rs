@@ -1,3 +1,5 @@
 fn main() {
-    cc::Build::new().file("../c_lib/lib.c").compile("c_lib");
+    let lib_c_filepath = "../c_lib/lib.c";
+    println!("cargo::rerun-if-changed={lib_c_filepath}");
+    cc::Build::new().file(lib_c_filepath).compile("c_lib");
 }
