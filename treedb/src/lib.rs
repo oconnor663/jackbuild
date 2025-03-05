@@ -3,6 +3,9 @@ use rusqlite::OptionalExtension;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+#[cfg(test)]
+mod test;
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum NodeType {
     Blob { executable: bool },
@@ -16,6 +19,7 @@ pub struct Child<'a> {
     node_type: NodeType,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tree {
     children: BTreeMap<String, (blake3::Hash, NodeType)>,
 }
@@ -45,12 +49,12 @@ impl Tree {
         }
     }
 
-    pub fn add_child(&mut self, name: impl Into<String>, id: blake3::Hash, node_type: NodeType) {
+    pub fn add_child(&mut self, name: impl Into<String>, id: &blake3::Hash, node_type: NodeType) {
         let name = name.into();
         assert!(!name.is_empty());
         assert!(!name.contains("/"));
         assert!(!name.contains("\0"));
-        self.children.insert(name, (id, node_type));
+        self.children.insert(name, (*id, node_type));
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Child<'_>> {
@@ -65,6 +69,7 @@ impl Tree {
 
     pub fn id(&self) -> blake3::Hash {
         let mut hasher = blake3::Hasher::new_derive_key("Tree");
+        // Note that self.children is sorted.
         for child in self.iter() {
             debug_assert!(!child.name.is_empty());
             debug_assert!(!child.name.contains("/"));
@@ -89,19 +94,24 @@ pub struct TreeDb {
 }
 
 impl TreeDb {
-    pub fn open(path: impl AsRef<Path>) -> rusqlite::Result<Self> {
+    pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let conn = rusqlite::Connection::open(path.as_ref())?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS blobs
-            (blob_id BLOB, data BLOB)
-            PRIMARY KEY (blob_id)",
+            "CREATE TABLE IF NOT EXISTS blobs (
+                 blob_id BLOB,
+                 data BLOB,
+                 PRIMARY KEY (blob_id))",
             (),
         )?;
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS trees
-            (tree_id BLOB, child_name TEXT, child_id BLOB, node_type TINYINT, executable BOOLEAN)
-            PRIMARY KEY (tree_id, child_name)",
+            "CREATE TABLE IF NOT EXISTS trees (
+                tree_id BLOB,
+                child_name TEXT,
+                child_id BLOB,
+                node_type TINYINT,
+                executable BOOLEAN,
+                PRIMARY KEY (tree_id, child_name))",
             (),
         )?;
         Ok(Self { conn })
@@ -150,7 +160,7 @@ impl TreeDb {
                 (1, false) => NodeType::Tree,
                 _ => bail!("unknown node type: {} {}", node_type, executable),
             };
-            tree.add_child(child_name, child_id.into(), node_type);
+            tree.add_child(child_name, &child_id.into(), node_type);
         }
         if tree.len() > 0 {
             Ok(Some(tree))

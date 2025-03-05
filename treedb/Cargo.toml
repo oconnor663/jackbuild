@@ -7,3 +7,6 @@ edition = "2024"
 anyhow = "1.0.97"
 blake3 = "1.6.1"
 rusqlite = "0.34.0"
+
+[dev-dependencies]
+tempfile = "3.17.1"
