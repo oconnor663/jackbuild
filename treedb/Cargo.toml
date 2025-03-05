@@ -1,0 +1,9 @@
+[package]
+name = "treedb"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.97"
+blake3 = "1.6.1"
+rusqlite = "0.34.0"
