@@ -1,4 +1,4 @@
-use anyhow::bail;
+use anyhow::{bail, ensure};
 use rusqlite::OptionalExtension;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -68,7 +68,7 @@ impl Tree {
     }
 
     pub fn id(&self) -> blake3::Hash {
-        let mut hasher = blake3::Hasher::new_derive_key("Tree");
+        let mut hasher = blake3::Hasher::new_derive_key("tree_id");
         // Note that self.children is sorted.
         for child in self.iter() {
             debug_assert!(!child.name.is_empty());
@@ -174,6 +174,25 @@ impl TreeDb {
         let tree_id = tree.id();
         let tx = self.conn.transaction()?;
         for child in tree.iter() {
+            match child.node_type {
+                NodeType::Blob { .. } => {
+                    let blob_count: u64 = tx.query_row(
+                        "SELECT COUNT(*) FROM blobs WHERE blob_id = ?",
+                        (child.id.as_bytes(),),
+                        |row| row.get(0),
+                    )?;
+                    assert!(blob_count <= 1, "duplicate blobs?");
+                    ensure!(blob_count == 1, "blob {} does not exist", child.id);
+                }
+                NodeType::Tree { .. } => {
+                    let tree_count: u64 = tx.query_row(
+                        "SELECT COUNT(*) FROM trees WHERE tree_id = ?",
+                        (child.id.as_bytes(),),
+                        |row| row.get(0),
+                    )?;
+                    ensure!(tree_count > 0, "tree {} does not exist", child.id);
+                }
+            }
             let (node_type, executable) = match child.node_type {
                 NodeType::Blob { executable } => (0u8, executable),
                 NodeType::Tree => (1u8, false),
