@@ -150,14 +150,14 @@ impl TreeDb {
     }
 
     // Not a method for borrowck reasons.
-    fn blob_path(&self, blob_id: blake3::Hash) -> PathBuf {
+    fn blob_path(&self, blob_id: &blake3::Hash) -> PathBuf {
         self.blobs_dir.join(blob_id.to_hex().as_str())
     }
 
     pub fn insert_blob(&mut self, blob: &[u8]) -> anyhow::Result<blake3::Hash> {
         // Do this first to avoid borrowck errors.
         let blob_id = blake3::hash(blob);
-        let blob_path = self.blob_path(blob_id);
+        let blob_path = self.blob_path(&blob_id);
 
         // Deferred transactions are vulnerable to BUSY errors if there are concurrent writers.
         // See: https://fractaledmind.github.io/2024/04/15/sqlite-on-rails-the-how-and-why-of-optimal-performance/
@@ -247,7 +247,7 @@ impl TreeDb {
                 )
             })?
             .finalize();
-        let blob_path = self.blob_path(blob_id);
+        let blob_path = self.blob_path(&blob_id);
 
         // Deferred transactions are vulnerable to BUSY errors if there are concurrent writers.
         // See: https://fractaledmind.github.io/2024/04/15/sqlite-on-rails-the-how-and-why-of-optimal-performance/
@@ -316,16 +316,11 @@ impl TreeDb {
         Ok(blob_id)
     }
 
-    pub fn get_blob(&mut self, blob_id: &blake3::Hash) -> anyhow::Result<Option<Vec<u8>>> {
-        // First try the blobs directory. Large blobs live here.
-        let blob_path = self.blobs_dir.join(blob_id.to_hex().as_str());
-        if fs::exists(&blob_path)? {
-            let bytes = fs::read(&blob_path)?;
-            debug_assert!(bytes.len() >= LARGE_BLOB_THRESHOLD);
-            return Ok(Some(fs::read(&blob_path)?));
-        }
-        // Second try the blobs table. Small blobs live here.
-        let data: Option<Vec<u8>> = self
+    /// Returns the blob as a `Vec<u8>`, or an error if the `blob_id` doesn't exist.
+    pub fn get_blob(&mut self, blob_id: &blake3::Hash) -> anyhow::Result<Vec<u8>> {
+        // If there is no row, the blob doesn't exist. If there is a row but it has NULL data, the
+        // data is in the blobs dir.
+        let row: Option<Option<Vec<u8>>> = self
             .conn
             .query_row(
                 "SELECT data FROM blobs WHERE blob_id = ?",
@@ -333,11 +328,76 @@ impl TreeDb {
                 |row| row.get(0),
             )
             .optional()?;
-        if let Some(data) = &data {
-            debug_assert_eq!(blob_id, &blake3::hash(data));
-            debug_assert!(data.len() < LARGE_BLOB_THRESHOLD);
+        match row {
+            // Blob doesn't exist.
+            None => bail!("blob {} doesn't exist", blob_id),
+            // Data was in the blobs table.
+            Some(Some(v)) => Ok(v),
+            // Data is in the blobs dir.
+            Some(None) => {
+                let data = fs::read(self.blob_path(&blob_id))?;
+                Ok(data)
+            }
         }
-        Ok(data)
+    }
+
+    /// Copies the blob to `destination`, or returns an error if the `blob_id` doesn't exist.
+    pub fn get_file(
+        &mut self,
+        blob_id: &blake3::Hash,
+        destination: impl AsRef<Path>,
+    ) -> anyhow::Result<()> {
+        // If there is no row, the blob doesn't exist. If there is a row but it has NULL data, the
+        // data is in the blobs dir.
+        let row: Option<Option<Vec<u8>>> = self
+            .conn
+            .query_row(
+                "SELECT data FROM blobs WHERE blob_id = ?",
+                (blob_id.as_bytes(),),
+                |row| row.get(0),
+            )
+            .optional()?;
+        match row {
+            // Blob doesn't exist.
+            None => bail!("blob {} doesn't exist", blob_id),
+            // Data was in the blobs table.
+            Some(Some(v)) => {
+                if let Some(parent_dir) = destination.as_ref().parent() {
+                    // Automatically create any parent directories.
+                    fs::create_dir_all(parent_dir).with_context(|| {
+                        format!("creating directory {}", parent_dir.to_string_lossy())
+                    })?;
+                }
+                fs::write(destination, &v)?;
+                Ok(())
+            }
+            // Data is in the blobs dir. Reflink it if possible.
+            Some(None) => {
+                let source = self.blob_path(blob_id);
+                if fs::exists(&destination)? {
+                    // reflink_or_copy() requires the destination to be clear.
+                    fs::remove_file(&destination).with_context(|| {
+                        format!(
+                            "preparing for copy by removing {}",
+                            destination.as_ref().to_string_lossy(),
+                        )
+                    })?;
+                } else if let Some(parent_dir) = destination.as_ref().parent() {
+                    // Automatically create any parent directories.
+                    fs::create_dir_all(parent_dir).with_context(|| {
+                        format!("creating directory {}", parent_dir.to_string_lossy())
+                    })?;
+                }
+                reflink_copy::reflink_or_copy(&source, &destination).with_context(|| {
+                    format!(
+                        "copying {} to {}",
+                        source.to_string_lossy(),
+                        destination.as_ref().to_string_lossy(),
+                    )
+                })?;
+                Ok(())
+            }
+        }
     }
 
     pub fn get_tree(&mut self, tree_id: &blake3::Hash) -> anyhow::Result<Option<Tree>> {

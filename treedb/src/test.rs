@@ -1,11 +1,21 @@
 use super::*;
+use std::fs;
+use tempfile::NamedTempFile;
+
+fn big_blob_tempfile() -> anyhow::Result<NamedTempFile> {
+    let mut blob_bytes = vec![0u8; LARGE_BLOB_THRESHOLD];
+    rand::fill(&mut blob_bytes[..]);
+    let file = NamedTempFile::new()?;
+    fs::write(file.path(), &blob_bytes)?;
+    Ok(file)
+}
 
 #[test]
 fn test_basic() -> anyhow::Result<()> {
     // Test data:
     // - a: b"foo"
     // - b: b"foo"
-    // - c/d: b"bar"
+    // - c/d: <LARGE_BLOB_THRESHOLD random bytes>
 
     let dir = tempfile::tempdir()?;
     let db_path = dir.path().join("db");
@@ -13,9 +23,11 @@ fn test_basic() -> anyhow::Result<()> {
     let mut conn = TreeDb::open(db_path)?;
 
     let foo_id = conn.insert_blob(b"foo")?;
-    let bar_id = conn.insert_blob(b"bar")?;
+    let big_file = big_blob_tempfile()?;
+    let big_bytes = fs::read(big_file.path())?;
+    let big_id = conn.insert_file(&big_file.path())?;
     let mut c_tree = Tree::new();
-    c_tree.add_child("d", &bar_id, NodeType::Blob { executable: false });
+    c_tree.add_child("d", &big_id, NodeType::Blob { executable: false });
     let c_id = conn.insert_tree(&c_tree)?;
     let mut root = Tree::new();
     root.add_child("a", &foo_id, NodeType::Blob { executable: false });
@@ -25,8 +37,16 @@ fn test_basic() -> anyhow::Result<()> {
 
     assert_eq!(conn.get_tree(&root_id)?.unwrap(), root);
     assert_eq!(conn.get_tree(&c_id)?.unwrap(), c_tree);
-    assert_eq!(conn.get_blob(&foo_id)?.unwrap(), b"foo");
-    assert_eq!(conn.get_blob(&bar_id)?.unwrap(), b"bar");
+    assert_eq!(conn.get_blob(&foo_id)?, b"foo");
+    assert_eq!(conn.get_blob(&big_id)?, big_bytes);
+
+    // Test get_file.
+    let foo2 = NamedTempFile::new()?;
+    conn.get_file(&foo_id, foo2.path())?;
+    assert_eq!(fs::read(foo2.path())?, b"foo");
+    let big2 = NamedTempFile::new()?;
+    conn.get_file(&big_id, big2.path())?;
+    assert_eq!(fs::read(big2.path())?, big_bytes);
 
     Ok(())
 }
